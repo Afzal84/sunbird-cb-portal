@@ -52,6 +52,11 @@ export class PlayerVideoComponent extends WidgetBaseComponent
   public id = 'v-player'
   private player: videoJs.Player | null = null
   private dispose: (() => void) | null = null
+  // Subtitle persistence keys — single source of truth for localStorage
+  private readonly SUBTITLE_LANGUAGE_KEY = 'selectedSubtitleLanguage'
+  private readonly SUBTITLE_ENABLED_KEY = 'subtitleEnabled'
+  // Guard to prevent duplicate texttrackchange listeners across re-initializations
+  private textTrackChangeListenerAdded = false
   constructor(
     private eventSvc: EventService,
     private contentSvc: WidgetContentService,
@@ -85,6 +90,8 @@ export class PlayerVideoComponent extends WidgetBaseComponent
     if (this.dispose) {
       this.dispose()
     }
+    // Reset listener guard so a fresh player instance can attach a new listener
+    this.textTrackChangeListenerAdded = false
   }
   private initializeVPlayer() {
     const dispatcher: telemetryEventDispatcherFunction = event => {
@@ -246,11 +253,17 @@ export class PlayerVideoComponent extends WidgetBaseComponent
     this.dispose = initObj.dispose
 
     initObj.player.ready(() => {
+      // Read saved subtitle preferences from localStorage before adding tracks
+      const savedLanguage = localStorage.getItem(this.SUBTITLE_LANGUAGE_KEY)
+      const savedEnabled = localStorage.getItem(this.SUBTITLE_ENABLED_KEY) === 'true'
+
       if (Array.isArray(this.widgetData.subtitles)) {
-        this.widgetData.subtitles.forEach((u, index) => {
+        this.widgetData.subtitles.forEach((u) => {
           initObj.player.addRemoteTextTrack(
             {
-              default: index === 0,
+              // Never auto-enable via the 'default' flag — we apply the saved state
+              // explicitly after tracks load to avoid browser-specific auto-enable behavior
+              default: false,
               kind: 'captions',
               label: u.label,
               srclang: u.srclang,
@@ -262,6 +275,52 @@ export class PlayerVideoComponent extends WidgetBaseComponent
       }
       if (this.widgetData.url) {
         initObj.player.src(this.widgetData.url)
+      }
+
+      // Apply saved subtitle state once the media metadata (and tracks) are available.
+      // Using 'loadedmetadata' ensures tracks are ready in all browsers including Safari.
+      initObj.player.one('loadedmetadata', () => {
+        const tracks = initObj.player.textTracks()
+        for (let i = 0; i < tracks.length; i++) {
+          const track = tracks[i]
+          if (track.kind === 'captions' || track.kind === 'subtitles') {
+            if (savedEnabled && savedLanguage &&
+                track.language.toLowerCase() === savedLanguage.toLowerCase()) {
+              track.mode = 'showing'
+            } else {
+              // Use 'hidden' instead of 'disabled' so the track data is still loaded
+              // but not rendered — important for correct cue availability across browsers
+              track.mode = 'hidden'
+            }
+          }
+        }
+      })
+
+      // Persist subtitle state whenever the user changes it.
+      // Guard ensures only one listener is attached even across video changes.
+      if (!this.textTrackChangeListenerAdded) {
+        this.textTrackChangeListenerAdded = true
+        initObj.player.on('texttrackchange', () => {
+          const tracks = initObj.player.textTracks()
+          let activeTrack: videoJs.TextTrack | null = null
+          for (let i = 0; i < tracks.length; i++) {
+            if (
+              (tracks[i].kind === 'captions' || tracks[i].kind === 'subtitles') &&
+              tracks[i].mode === 'showing'
+            ) {
+              activeTrack = tracks[i]
+              break
+            }
+          }
+          if (activeTrack) {
+            // Save language and enabled state so the next load or refresh restores them
+            localStorage.setItem(this.SUBTITLE_LANGUAGE_KEY, activeTrack.language.toLowerCase())
+            localStorage.setItem(this.SUBTITLE_ENABLED_KEY, 'true')
+          } else {
+            // Mark as disabled but keep the saved language so it can be re-enabled later
+            localStorage.setItem(this.SUBTITLE_ENABLED_KEY, 'false')
+          }
+        })
       }
     })
   }
