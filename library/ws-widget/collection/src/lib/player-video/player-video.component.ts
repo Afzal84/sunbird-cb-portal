@@ -279,12 +279,14 @@ export class PlayerVideoComponent extends WidgetBaseComponent
 
       // Apply saved subtitle state once the media metadata (and tracks) are available.
       // Using 'loadedmetadata' ensures tracks are ready in all browsers including Safari.
-      initObj.player.one('loadedmetadata', () => {
+      // Using 'on' (not 'one') so preferences are restored each time the source changes
+      // when navigating between videos.
+      initObj.player.on('loadedmetadata', () => {
         const tracks = initObj.player.textTracks()
         for (let i = 0; i < tracks.length; i++) {
           const track = tracks[i]
           if (track.kind === 'captions' || track.kind === 'subtitles') {
-            if (savedEnabled && savedLanguage &&
+            if (savedEnabled && savedLanguage && track.language &&
                 track.language.toLowerCase() === savedLanguage.toLowerCase()) {
               track.mode = 'showing'
             } else {
@@ -312,7 +314,7 @@ export class PlayerVideoComponent extends WidgetBaseComponent
               break
             }
           }
-          if (activeTrack) {
+          if (activeTrack && activeTrack.language) {
             // Save language and enabled state so the next load or refresh restores them
             localStorage.setItem(this.SUBTITLE_LANGUAGE_KEY, activeTrack.language.toLowerCase())
             localStorage.setItem(this.SUBTITLE_ENABLED_KEY, 'true')
